@@ -1,4 +1,4 @@
-# bulk_sms_scheduler.py
+# bulk_sms_campaigns.py
 
 import sys
 import csv
@@ -17,9 +17,9 @@ class BulkSMSApp(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Bulk SMS Manager (Android)")
-        self.setGeometry(200, 80, 1000, 650)
+        self.setGeometry(200, 80, 1100, 650)
 
-        # Tabs
+        # Main tabs
         self.tabs = QTabWidget()
         layout = QVBoxLayout()
         layout.addWidget(self.tabs)
@@ -28,17 +28,17 @@ class BulkSMSApp(QWidget):
         # Data stores
         self.drafts = {}
         self.history = []
-        self.contacts = {}
+        self.contacts = {}   # {name: phone}
         self.templates = {}
         self.scheduled = []
-        self.campaigns = {}
+        self.campaigns = {}  # {month: [campaigns]}
 
-        # Timer to check scheduled tasks every 10s
+        # Timer for scheduled tasks
         self.timer = QTimer()
         self.timer.timeout.connect(self.check_scheduled)
-        self.timer.start(10000)
+        self.timer.start(10000)  # check every 10 seconds
 
-        # Build Tabs
+        # Build tabs
         self.init_send_tab()
         self.init_drafts_tab()
         self.init_history_tab()
@@ -58,7 +58,7 @@ class BulkSMSApp(QWidget):
         self.btn_csv.clicked.connect(self.load_csv)
         send_layout.addWidget(self.btn_csv)
 
-        self.label_msg = QLabel("Enter SMS Message:")
+        self.label_msg = QLabel("Enter SMS Message (use {name} for personalization):")
         send_layout.addWidget(self.label_msg)
 
         self.txt_message = QTextEdit()
@@ -99,6 +99,9 @@ class BulkSMSApp(QWidget):
             self.csv_file = file_path
             self.label_csv.setText(f"Selected CSV File: {file_path}")
 
+    def personalize_message(self, name, message):
+        return message.replace("{name}", name if name else "")
+
     def send_sms(self, phone, message):
         try:
             cmd = f'adb shell service call isms 7 i32 0 s16 "com.android.mms.service" ' \
@@ -110,7 +113,6 @@ class BulkSMSApp(QWidget):
             status = f"❌ Failed: {e}"
             self.log.append(f"❌ Failed to {phone}: {e}")
 
-        # Save in history
         self.history.append({
             "phone": phone,
             "message": message,
@@ -120,64 +122,66 @@ class BulkSMSApp(QWidget):
         self.refresh_history()
 
     def prepare_bulk_sms(self):
-        """Send now or schedule based on chosen datetime"""
+        """Send now or schedule"""
         message = self.txt_message.toPlainText().strip()
         if not message:
             QMessageBox.warning(self, "Error", "Please enter a message!")
             return
 
-        numbers = []
+        recipients = []
 
+        # CSV contacts
         if self.csv_file:
             with open(self.csv_file, "r", encoding="utf-8") as f:
                 reader = csv.reader(f)
                 for row in reader:
                     if row:
-                        numbers.append(row[0].strip())
+                        phone = row[0].strip()
+                        name = row[1].strip() if len(row) > 1 else ""
+                        recipients.append((name, phone))
 
-        for phone in self.contacts.values():
-            numbers.append(phone)
+        # Stored contacts
+        for name, phone in self.contacts.items():
+            recipients.append((name, phone))
 
-        if not numbers:
+        if not recipients:
             QMessageBox.warning(self, "Error", "No recipients found.")
             return
 
-        # Campaign name
+        # Campaign
         now = datetime.datetime.now()
         default_campaign = f"{now.strftime('%B %Y')} Campaign"
         campaign_name, ok = QInputDialog.getText(self, "Campaign Name", "Enter campaign name:", text=default_campaign)
         if not ok or not campaign_name.strip():
             campaign_name = default_campaign
 
-        # Check schedule
+        # Schedule or send
         chosen_time = self.datetime_picker.dateTime().toPyDateTime()
         if chosen_time > datetime.datetime.now():
-            # Schedule it
-            self.scheduled.append({"time": chosen_time, "numbers": numbers, "message": message, "campaign": campaign_name})
-            self.log.append(f"⏰ Scheduled {len(numbers)} SMS for {chosen_time}")
+            self.scheduled.append({"time": chosen_time, "recipients": recipients, "message": message, "campaign": campaign_name})
+            self.log.append(f"⏰ Scheduled {len(recipients)} SMS for {chosen_time}")
+            self.save_campaign(campaign_name, message, recipients, "Scheduled")
             QMessageBox.information(self, "Scheduled", f"SMS scheduled for {chosen_time}")
-            self.save_campaign(campaign_name, message, numbers, "Scheduled")
         else:
-            # Send now
-            self.send_bulk_sms(numbers, message, campaign_name)
+            self.send_bulk_sms(recipients, message, campaign_name)
 
-    def send_bulk_sms(self, numbers, message, campaign_name):
-        self.progress.setMaximum(len(numbers))
+    def send_bulk_sms(self, recipients, message, campaign_name):
+        self.progress.setMaximum(len(recipients))
         self.progress.setValue(0)
 
-        for i, phone in enumerate(numbers, start=1):
-            self.send_sms(phone, message)
+        for i, (name, phone) in enumerate(recipients, start=1):
+            personalized = self.personalize_message(name, message)
+            self.send_sms(phone, personalized)
             self.progress.setValue(i)
 
         QMessageBox.information(self, "Done", f"📨 Campaign '{campaign_name}' complete!")
-        self.save_campaign(campaign_name, message, numbers, "Completed")
+        self.save_campaign(campaign_name, message, recipients, "Completed")
 
     def check_scheduled(self):
-        """Check scheduled messages and send if due"""
         now = datetime.datetime.now()
         due = [job for job in self.scheduled if job["time"] <= now]
         for job in due:
-            self.send_bulk_sms(job["numbers"], job["message"], job["campaign"])
+            self.send_bulk_sms(job["recipients"], job["message"], job["campaign"])
             self.scheduled.remove(job)
 
     # ---------------- DRAFTS TAB ----------------
@@ -327,30 +331,43 @@ class BulkSMSApp(QWidget):
     def init_campaigns_tab(self):
         self.tab_campaigns = QWidget()
         layout = QVBoxLayout()
-        self.campaign_list = QListWidget()
-        layout.addWidget(self.campaign_list)
+
+        self.month_tabs = QTabWidget()
+        layout.addWidget(self.month_tabs)
+
         self.tab_campaigns.setLayout(layout)
         self.tabs.addTab(self.tab_campaigns, "📊 Campaigns")
 
-    def save_campaign(self, name, message, numbers, status):
+    def save_campaign(self, name, message, recipients, status):
         month = datetime.datetime.now().strftime("%B %Y")
         if month not in self.campaigns:
             self.campaigns[month] = []
+
         self.campaigns[month].append({
             "name": name,
             "message": message,
-            "recipients": numbers,
+            "recipients": recipients,
             "status": status,
-            "created": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            "created": datetime.datetime.now()
         })
         self.refresh_campaigns()
 
     def refresh_campaigns(self):
-        self.campaign_list.clear()
+        self.month_tabs.clear()
         for month, campaigns in self.campaigns.items():
-            self.campaign_list.addItem(f"📅 {month}")
-            for camp in campaigns:
-                self.campaign_list.addItem(f"   - {camp['name']} ({camp['status']})")
+            tab = QWidget()
+            vbox = QVBoxLayout()
+            lst = QListWidget()
+
+            # Sort campaigns newest → oldest
+            sorted_camps = sorted(campaigns, key=lambda x: x["created"], reverse=True)
+            for camp in sorted_camps:
+                created_str = camp["created"].strftime("%Y-%m-%d %H:%M")
+                lst.addItem(f"{camp['name']} ({camp['status']})    ➝ {created_str}")
+
+            vbox.addWidget(lst)
+            tab.setLayout(vbox)
+            self.month_tabs.addTab(tab, f"📅 {month}")
 
 
 # ---------------- MAIN ----------------
