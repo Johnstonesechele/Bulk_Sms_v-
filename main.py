@@ -1,4 +1,4 @@
-# bulk_sms_full.py
+# bulk_sms_pro.py
 
 import sys
 import csv
@@ -6,7 +6,8 @@ import os
 import datetime
 from PyQt6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QLabel, QPushButton,
-    QTextEdit, QFileDialog, QMessageBox, QListWidget, QHBoxLayout, QLineEdit, QTabWidget, QProgressBar
+    QTextEdit, QFileDialog, QMessageBox, QListWidget, QHBoxLayout,
+    QLineEdit, QTabWidget, QProgressBar, QInputDialog
 )
 from PyQt6.QtGui import QPalette, QColor
 
@@ -15,9 +16,9 @@ class BulkSMSApp(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Bulk SMS Manager (Android)")
-        self.setGeometry(300, 100, 800, 600)
+        self.setGeometry(300, 100, 900, 600)
 
-        # Tabs: Drafts, Send, History
+        # Tabs
         self.tabs = QTabWidget()
         layout = QVBoxLayout()
         layout.addWidget(self.tabs)
@@ -26,11 +27,15 @@ class BulkSMSApp(QWidget):
         # Data stores
         self.drafts = {}
         self.history = []
+        self.contacts = {}
+        self.templates = {}
 
         # Build Tabs
         self.init_send_tab()
         self.init_drafts_tab()
         self.init_history_tab()
+        self.init_contacts_tab()
+        self.init_templates_tab()
 
     # ---------------- SEND TAB ----------------
     def init_send_tab(self):
@@ -49,6 +54,10 @@ class BulkSMSApp(QWidget):
 
         self.txt_message = QTextEdit()
         send_layout.addWidget(self.txt_message)
+
+        self.btn_insert_template = QPushButton("📝 Insert Template")
+        self.btn_insert_template.clicked.connect(self.insert_template)
+        send_layout.addWidget(self.btn_insert_template)
 
         self.btn_save_draft = QPushButton("💾 Save as Draft")
         self.btn_save_draft.clicked.connect(self.save_draft)
@@ -81,14 +90,13 @@ class BulkSMSApp(QWidget):
             cmd = f'adb shell service call isms 7 i32 0 s16 "com.android.mms.service" ' \
                   f's16 "{phone}" s16 "null" s16 "{message}" s16 "null" s16 "null"'
             os.system(cmd)
-
             status = "✅ Success"
             self.log.append(f"✅ Sent to {phone}")
         except Exception as e:
             status = f"❌ Failed: {e}"
             self.log.append(f"❌ Failed to {phone}: {e}")
 
-        # Add to history
+        # Save in history
         self.history.append({
             "phone": phone,
             "message": message,
@@ -98,21 +106,28 @@ class BulkSMSApp(QWidget):
         self.refresh_history()
 
     def send_bulk_sms(self):
-        if not self.csv_file:
-            QMessageBox.warning(self, "Error", "Please select a CSV file first!")
-            return
-
         message = self.txt_message.toPlainText().strip()
         if not message:
             QMessageBox.warning(self, "Error", "Please enter a message!")
             return
 
         numbers = []
-        with open(self.csv_file, "r", encoding="utf-8") as f:
-            reader = csv.reader(f)
-            for row in reader:
-                if row:
-                    numbers.append(row[0].strip())
+
+        # From CSV
+        if self.csv_file:
+            with open(self.csv_file, "r", encoding="utf-8") as f:
+                reader = csv.reader(f)
+                for row in reader:
+                    if row:
+                        numbers.append(row[0].strip())
+
+        # From Contacts
+        for phone in self.contacts.values():
+            numbers.append(phone)
+
+        if not numbers:
+            QMessageBox.warning(self, "Error", "No recipients found (CSV or Contacts).")
+            return
 
         self.progress.setMaximum(len(numbers))
         self.progress.setValue(0)
@@ -201,6 +216,96 @@ class BulkSMSApp(QWidget):
                     writer.writerow([item["time"], item["phone"], item["message"], item["status"]])
             QMessageBox.information(self, "Exported", "History exported successfully!")
 
+    # ---------------- CONTACTS TAB ----------------
+    def init_contacts_tab(self):
+        self.tab_contacts = QWidget()
+        layout = QVBoxLayout()
+
+        self.contact_list = QListWidget()
+        layout.addWidget(self.contact_list)
+
+        btns = QHBoxLayout()
+        self.btn_add_contact = QPushButton("➕ Add Contact")
+        self.btn_add_contact.clicked.connect(self.add_contact)
+        btns.addWidget(self.btn_add_contact)
+
+        self.btn_delete_contact = QPushButton("🗑 Delete Contact")
+        self.btn_delete_contact.clicked.connect(self.delete_contact)
+        btns.addWidget(self.btn_delete_contact)
+
+        layout.addLayout(btns)
+
+        self.tab_contacts.setLayout(layout)
+        self.tabs.addTab(self.tab_contacts, "📒 Contacts")
+
+    def add_contact(self):
+        name, ok1 = QInputDialog.getText(self, "Add Contact", "Enter contact name:")
+        if ok1 and name.strip():
+            phone, ok2 = QInputDialog.getText(self, "Add Contact", "Enter phone number:")
+            if ok2 and phone.strip():
+                self.contacts[name] = phone.strip()
+                self.refresh_contacts()
+
+    def delete_contact(self):
+        selected = self.contact_list.currentItem()
+        if selected:
+            name = selected.text().split(" | ")[0]
+            del self.contacts[name]
+            self.refresh_contacts()
+
+    def refresh_contacts(self):
+        self.contact_list.clear()
+        for name, phone in self.contacts.items():
+            self.contact_list.addItem(f"{name} | {phone}")
+
+    # ---------------- TEMPLATES TAB ----------------
+    def init_templates_tab(self):
+        self.tab_templates = QWidget()
+        layout = QVBoxLayout()
+
+        self.template_list = QListWidget()
+        layout.addWidget(self.template_list)
+
+        btns = QHBoxLayout()
+        self.btn_add_template = QPushButton("➕ Add Template")
+        self.btn_add_template.clicked.connect(self.add_template)
+        btns.addWidget(self.btn_add_template)
+
+        self.btn_delete_template = QPushButton("🗑 Delete Template")
+        self.btn_delete_template.clicked.connect(self.delete_template)
+        btns.addWidget(self.btn_delete_template)
+
+        layout.addLayout(btns)
+
+        self.tab_templates.setLayout(layout)
+        self.tabs.addTab(self.tab_templates, "📝 Templates")
+
+    def add_template(self):
+        title, ok1 = QInputDialog.getText(self, "Add Template", "Enter template name:")
+        if ok1 and title.strip():
+            body, ok2 = QInputDialog.getMultiLineText(self, "Add Template", "Enter message body (use {name} if needed):")
+            if ok2 and body.strip():
+                self.templates[title] = body.strip()
+                self.refresh_templates()
+
+    def delete_template(self):
+        selected = self.template_list.currentItem()
+        if selected:
+            title = selected.text()
+            del self.templates[title]
+            self.refresh_templates()
+
+    def refresh_templates(self):
+        self.template_list.clear()
+        for title in self.templates.keys():
+            self.template_list.addItem(title)
+
+    def insert_template(self):
+        selected = self.template_list.currentItem()
+        if selected:
+            template_title = selected.text()
+            self.txt_message.setPlainText(self.templates[template_title])
+
 
 # ---------------- MAIN ----------------
 if __name__ == "__main__":
@@ -209,8 +314,8 @@ if __name__ == "__main__":
     # Dark theme with green, blue, and gold
     palette = QPalette()
     palette.setColor(QPalette.ColorRole.Window, QColor("#0B1D26"))     # Dark Blue background
-    palette.setColor(QPalette.ColorRole.WindowText, QColor("#FFD700")) # Dark Gold text
-    palette.setColor(QPalette.ColorRole.Base, QColor("#0F2F1E"))       # Dark Green for inputs
+    palette.setColor(QPalette.ColorRole.WindowText, QColor("#FFD700")) # Gold text
+    palette.setColor(QPalette.ColorRole.Base, QColor("#0F2F1E"))       # Dark Green inputs
     palette.setColor(QPalette.ColorRole.Text, QColor("#FFFFFF"))
     palette.setColor(QPalette.ColorRole.Button, QColor("#1B3B4F"))
     palette.setColor(QPalette.ColorRole.ButtonText, QColor("#FFD700"))
